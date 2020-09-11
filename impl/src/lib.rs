@@ -2,6 +2,8 @@
 
 extern crate proc_macro;
 use proc_macro::*;
+use std::str::FromStr;
+use proc_macro_crate::crate_name;
 
 //----------------------------------------------------------------
 
@@ -31,12 +33,24 @@ pub fn obfstr_attribute(args: TokenStream, input: TokenStream) -> TokenStream {
 	replace_macro(replace_macro(input, "_obfstr_", obfstr_impl), "_strlen_", strlen_impl)
 }
 
+fn usize_to_typenum_ty(n: usize) -> String {
+	let krate = crate_name("obfstr").unwrap_or("obfstr".to_string());
+	let mut ty = format!("{}::generic_array::typenum::UTerm", krate);
+	let leading_zeros = n.leading_zeros();
+	for i in leading_zeros..64 {
+		let bit = (n >> (63 - i)) & 1;
+		ty = format!("{krate}::generic_array::typenum::UInt<{}, {krate}::generic_array::typenum::B{}>", ty, bit, krate=krate);
+	}
+	ty
+}
+
 #[cfg(feature = "rand")]
 fn strlen_impl(mut input: TokenStream) -> TokenStream {
     input = ignore_groups(input);
 	if let Some(TokenTree::Literal(literal)) = input.into_iter().next() {
 		let s = string_parse(literal);
-		TokenStream::from(TokenTree::Literal(Literal::usize_suffixed(s.len())))
+		let typenum_ty = usize_to_typenum_ty(s.len());
+		TokenStream::from_str(&typenum_ty).unwrap()
 	}
 	else {
 		panic!("expected a string literal")
@@ -44,6 +58,7 @@ fn strlen_impl(mut input: TokenStream) -> TokenStream {
 }
 #[cfg(feature = "rand")]
 fn obfstr_impl(mut input: TokenStream) -> TokenStream {
+	let krate = crate_name("obfstr").unwrap_or("obfstr".to_string());
     input = ignore_groups(input);
 	let mut tt = input.into_iter();
 	let mut token = tt.next();
@@ -60,7 +75,21 @@ fn obfstr_impl(mut input: TokenStream) -> TokenStream {
 	// Followed by a string literal
 	let string = match token {
 		Some(TokenTree::Literal(lit)) => string_parse(lit),
-		Some(tt) => panic!("expected a string literal: `{}`", tt),
+		Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::None => {
+			let mut tt = group.stream().into_iter();
+			let mut token = tt.next();
+			let ret = match token {
+				Some(TokenTree::Literal(lit)) => string_parse(lit),
+				Some(tt) => panic!("expected a string literal: `{:?}`", tt),
+				None => panic!("expected a string literal"),
+			};
+			token = tt.next();
+			if let Some(tt) = token {
+				panic!("unexpected token: `{}`", tt);
+			}
+			ret
+		}
+		Some(tt) => panic!("expected a string literal: `{:?}`", tt),
 		None => panic!("expected a string literal"),
 	};
 
@@ -82,10 +111,15 @@ fn obfstr_impl(mut input: TokenStream) -> TokenStream {
 		encrypt(&mut bytes, key)
 	}.into_iter().collect();
 
-	// Generate `key, [array]` to be passed to ObfString constructor
+	// Generate `key, arr![array]` to be passed to ObfString constructor
 	vec![
 		TokenTree::Literal(Literal::u32_suffixed(key)),
 		TokenTree::Punct(Punct::new(',', Spacing::Alone)),
+		TokenTree::Ident(Ident::new(&krate, Span::call_site())),
+		TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+		TokenTree::Punct(Punct::new(':', Spacing::Alone)),
+		TokenTree::Ident(Ident::new("arr", Span::call_site())),
+		TokenTree::Punct(Punct::new('!', Spacing::Alone)),
 		TokenTree::Group(Group::new(Delimiter::Bracket, array)),
 	].into_iter().collect()
 }
@@ -105,6 +139,8 @@ fn encrypt(bytes: &mut [u8], mut key: u32) -> Vec<TokenTree> {
 		*byte = (*byte).wrapping_sub(key as u8);
 	}
 	let mut array = Vec::new();
+	array.push(TokenTree::Ident(Ident::new("u8", Span::call_site())));
+	array.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
 	for &byte in bytes.iter() {
 		array.push(TokenTree::Literal(Literal::u8_suffixed(byte)));
 		array.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
@@ -119,6 +155,8 @@ fn wencrypt(words: &mut [u16], mut key: u32) -> Vec<TokenTree> {
 		*word = (*word).wrapping_sub(key as u16);
 	}
 	let mut array = Vec::new();
+	array.push(TokenTree::Ident(Ident::new("u16", Span::call_site())));
+	array.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
 	for &word in words.iter() {
 		array.push(TokenTree::Literal(Literal::u16_suffixed(word)));
 		array.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
@@ -134,7 +172,7 @@ fn string_parse(input: Literal) -> String {
 
 	// Trim the string from its outer quotes
 	if bytes.len() < 2 || bytes[0] != b'"' || bytes[bytes.len() - 1] != b'"' {
-		panic!("expected a string literal: `{}`", input);
+		panic!("expected a string literal: `{:x?}`", input.to_string().as_bytes());
 	}
 	bytes = &bytes[1..bytes.len() - 1];
 	let string: &str = unsafe { &*(bytes as *const _ as *const str) };

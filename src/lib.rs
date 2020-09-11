@@ -3,7 +3,6 @@ Compiletime string literal obfuscation.
 !*/
 
 #![no_std]
-#![feature(fixed_size_array)]
 
 // Reexport these because reasons...
 #[doc(hidden)]
@@ -15,7 +14,13 @@ pub use cfgd::*;
 mod cfgd {
 
 use core::{char, fmt, mem, ops, ptr, slice, str};
-use core::array::FixedSizeArray;
+use generic_array::ArrayLength;
+
+// Exported for use in macro
+#[doc(hidden)]
+pub use generic_array::{self, arr, GenericArray, typenum};
+#[doc(hidden)]
+pub use core::mem::transmute;
 
 /// Compiletime string literal obfuscation, returns a borrowed temporary and may not escape the statement it was used in.
 ///
@@ -28,12 +33,12 @@ use core::array::FixedSizeArray;
 macro_rules! obfstr {
 	($string:literal) => {{
 		#[$crate::obfstr_attribute]
-		const S: $crate::ObfString<[u8; _strlen_!($string)]> = $crate::ObfString::new(_obfstr_!($string));
+		const S: $crate::ObfString<$crate::GenericArray<u8, _strlen_!($string)>> = $crate::ObfString::new(_obfstr_!($string));
 		S.decrypt($crate::random!(usize) & 0xffff).as_str()
 	}};
 	(L$string:literal) => {{
 		#[$crate::obfstr_attribute]
-		const S: $crate::WObfString<[u16; _strlen_!($string)]> = $crate::WObfString::new(_obfstr_!(L$string));
+		const S: $crate::WObfString<$crate::GenericArray<u16, _strlen_!($string)>> = $crate::WObfString::new(_obfstr_!(L$string));
 		S.decrypt($crate::random!(usize) & 0xffff).as_wide()
 	}};
 }
@@ -50,12 +55,12 @@ macro_rules! obfstr {
 macro_rules! obflocal {
 	($string:literal) => {{
 		#[$crate::obfstr_attribute]
-		const S: $crate::ObfString<[u8; _strlen_!($string)]> = $crate::ObfString::new(_obfstr_!($string));
+		const S: $crate::ObfString<$crate::GenericArray<u8, _strlen_!($string)>> = $crate::ObfString::new(_obfstr_!($string));
 		S.decrypt($crate::random!(usize) & 0xffff)
 	}};
 	(L$string:literal) => {{
 		#[$crate::obfstr_attribute]
-		const S: $crate::WObfString<[u16; _strlen_!($string)]> = $crate::WObfString::new(_obfstr_!(L$string));
+		const S: $crate::WObfString<$crate::GenericArray<u16, _strlen_!($string)>> = $crate::WObfString::new(_obfstr_!(L$string));
 		S.decrypt($crate::random!(usize) & 0xffff)
 	}};
 }
@@ -65,18 +70,19 @@ macro_rules! obflocal {
 /// Prefix the string literal with `L` to get an UTF-16 obfuscated string.
 ///
 /// ```
-/// static GSTR: obfstr::ObfString<[u8; 10]> = obfstr::obfconst!("Hello 🌍");
+/// use generic_array::{GenericArray, typenum::consts::*};
+/// static GSTR: obfstr::ObfString<GenericArray<u8, U10>> = obfstr::obfconst!("Hello 🌍");
 /// assert_eq!(GSTR.decrypt(0).as_str(), "Hello 🌍");
 /// ```
 #[macro_export]
 macro_rules! obfconst {
 	($string:literal) => {{
 		#[$crate::obfstr_attribute]
-		const S: $crate::ObfString<[u8; _strlen_!($string)]> = $crate::ObfString::new(_obfstr_!($string)); S
+		const S: $crate::ObfString<$crate::GenericArray<u8, _strlen_!($string)>> = $crate::ObfString::new(_obfstr_!($string)); S
 	}};
 	(L$string:literal) => {{
 		#[$crate::obfstr_attribute]
-		const S: $crate::WObfString<[u16; _strlen_!($string)]> = $crate::WObfString::new(_obfstr_!(L$string)); S
+		const S: $crate::WObfString<$crate::GenericArray<u16, _strlen_!($string)>> = $crate::WObfString::new(_obfstr_!(L$string)); S
 	}};
 }
 
@@ -90,7 +96,7 @@ macro_rules! obfconst {
 macro_rules! unsafe_obfstr {
 	($string:literal) => {{
 		#[$crate::obfstr_attribute]
-		const S: $crate::ObfString<[u8; _strlen_!($string)]> = $crate::ObfString::new(_obfstr_!($string));
+		const S: $crate::ObfString<$crate::GenericArray<u8, _strlen_!($string)>> = $crate::ObfString::new(_obfstr_!($string));
 		S.decrypt($crate::random!(usize) & 0xffff).unsafe_as_static_str()
 	}};
 }
@@ -143,15 +149,15 @@ impl<A> ObfString<A> {
 		ObfString { key, data }
 	}
 }
-impl<A: FixedSizeArray<u8>> ObfString<A> {
+impl<LEN: ArrayLength<u8>> ObfString<GenericArray<u8, LEN>> {
 	/// Decrypts the obfuscated string and returns the buffer.
 	///
 	/// The `x` argument should be a compiletime random 16-bit value.
 	/// It is used to obfuscate the underlying call to the decrypt routine.
 	#[inline(always)]
-	pub fn decrypt(&self, x: usize) -> ObfBuffer<A> {
+	pub fn decrypt(&self, x: usize) -> ObfBuffer<GenericArray<u8, LEN>> {
 		unsafe {
-			let mut buffer = ObfBuffer::<A>::uninit();
+			let mut buffer = ObfBuffer::<GenericArray<u8, LEN>>::uninit();
 			let data = self.data.as_slice();
 			let src = data.as_ptr() as usize - data.len() * XREF_SHIFT;
 			let f: unsafe fn(&mut [u8], usize) = mem::transmute(ptr::read_volatile(&(decryptbuf as usize + x)) - x);
@@ -160,12 +166,12 @@ impl<A: FixedSizeArray<u8>> ObfString<A> {
 		}
 	}
 }
-impl<A: FixedSizeArray<u8>> fmt::Debug for ObfString<A> {
+impl<LEN: ArrayLength<u8>> fmt::Debug for ObfString<GenericArray<u8, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		self.decrypt(random!(usize) & 0xffff).fmt(f)
 	}
 }
-impl<A: FixedSizeArray<u8>> fmt::Display for ObfString<A> {
+impl<LEN: ArrayLength<u8>> fmt::Display for ObfString<GenericArray<u8, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		self.decrypt(random!(usize) & 0xffff).fmt(f)
 	}
@@ -185,7 +191,7 @@ unsafe fn decryptbuf(dest: &mut [u8], src: usize) {
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct ObfBuffer<A>(A);
-impl<A: FixedSizeArray<u8>> ObfBuffer<A> {
+impl<LEN: ArrayLength<u8>> ObfBuffer<GenericArray<u8, LEN>> {
 	#[allow(deprecated)]
 	unsafe fn uninit() -> Self {
 		mem::uninitialized()
@@ -204,24 +210,24 @@ impl<A: FixedSizeArray<u8>> ObfBuffer<A> {
 		unsafe { &*(self.as_str() as *const _) }
 	}
 }
-impl<A: FixedSizeArray<u8>> ops::Deref for ObfBuffer<A> {
+impl<LEN: ArrayLength<u8>> ops::Deref for ObfBuffer<GenericArray<u8, LEN>> {
 	type Target = str;
 	#[inline]
 	fn deref(&self) -> &str {
 		self.as_str()
 	}
 }
-impl<A: FixedSizeArray<u8>> AsRef<str> for ObfBuffer<A> {
+impl<LEN: ArrayLength<u8>> AsRef<str> for ObfBuffer<GenericArray<u8, LEN>> {
 	fn as_ref(&self) -> &str {
 		self.as_str()
 	}
 }
-impl<A: FixedSizeArray<u8>> fmt::Debug for ObfBuffer<A> {
+impl<LEN: ArrayLength<u8>> fmt::Debug for ObfBuffer<GenericArray<u8, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		self.as_str().fmt(f)
 	}
 }
-impl<A: FixedSizeArray<u8>> fmt::Display for ObfBuffer<A> {
+impl<LEN: ArrayLength<u8>> fmt::Display for ObfBuffer<GenericArray<u8, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		self.as_str().fmt(f)
 	}
@@ -245,15 +251,15 @@ impl<A> WObfString<A> {
 		WObfString { key, data }
 	}
 }
-impl<A: FixedSizeArray<u16>> WObfString<A> {
+impl<LEN: ArrayLength<u16>> WObfString<GenericArray<u16, LEN>> {
 	/// Decrypts the obfuscated wide string and returns the buffer.
 	///
 	/// The `x` argument should be a compiletime random 16-bit value.
 	/// It is used to obfuscate the underlying call to the decrypt routine.
 	#[inline(always)]
-	pub fn decrypt(&self, x: usize) -> WObfBuffer<A> {
+	pub fn decrypt(&self, x: usize) -> WObfBuffer<GenericArray<u16, LEN>> {
 		unsafe {
-			let mut buffer = WObfBuffer::<A>::uninit();
+			let mut buffer = WObfBuffer::<GenericArray<u16, LEN>>::uninit();
 			let data = self.data.as_slice();
 			let src = data.as_ptr() as usize - data.len() * XREF_SHIFT;
 			let f: unsafe fn(&mut [u16], usize) = mem::transmute(ptr::read_volatile(&(wdecryptbuf as usize + x)) - x);
@@ -262,12 +268,12 @@ impl<A: FixedSizeArray<u16>> WObfString<A> {
 		}
 	}
 }
-impl<A: FixedSizeArray<u16>> fmt::Debug for WObfString<A> {
+impl<LEN: ArrayLength<u16>> fmt::Debug for WObfString<GenericArray<u16, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		self.decrypt(random!(usize) & 0xffff).fmt(f)
 	}
 }
-impl<A: FixedSizeArray<u16>> fmt::Display for WObfString<A> {
+impl<LEN: ArrayLength<u16>> fmt::Display for WObfString<GenericArray<u16, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		self.decrypt(random!(usize) & 0xffff).fmt(f)
 	}
@@ -287,7 +293,7 @@ unsafe fn wdecryptbuf(dest: &mut [u16], src: usize) {
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct WObfBuffer<A>(A);
-impl<A: FixedSizeArray<u16>> WObfBuffer<A> {
+impl<LEN: ArrayLength<u16>> WObfBuffer<GenericArray<u16, LEN>> {
 	#[allow(deprecated)]
 	unsafe fn uninit() -> Self {
 		mem::uninitialized()
@@ -297,19 +303,19 @@ impl<A: FixedSizeArray<u16>> WObfBuffer<A> {
 		self.0.as_slice()
 	}
 }
-impl<A: FixedSizeArray<u16>> ops::Deref for WObfBuffer<A> {
+impl<LEN: ArrayLength<u16>> ops::Deref for WObfBuffer<GenericArray<u16, LEN>> {
 	type Target = [u16];
 	#[inline]
 	fn deref(&self) -> &[u16] {
 		self.as_wide()
 	}
 }
-impl<A: FixedSizeArray<u16>> AsRef<[u16]> for WObfBuffer<A> {
+impl<LEN: ArrayLength<u16>> AsRef<[u16]> for WObfBuffer<GenericArray<u16, LEN>> {
 	fn as_ref(&self) -> &[u16] {
 		self.as_wide()
 	}
 }
-impl<A: FixedSizeArray<u16>> fmt::Debug for WObfBuffer<A> {
+impl<LEN: ArrayLength<u16>> fmt::Debug for WObfBuffer<GenericArray<u16, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		use fmt::Write;
 		f.write_str("\"")?;
@@ -319,7 +325,7 @@ impl<A: FixedSizeArray<u16>> fmt::Debug for WObfBuffer<A> {
 		f.write_str("\"")
 	}
 }
-impl<A: FixedSizeArray<u16>> fmt::Display for WObfBuffer<A> {
+impl<LEN: ArrayLength<u16>> fmt::Display for WObfBuffer<GenericArray<u16, LEN>> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		use fmt::Write;
 		for chr in char::decode_utf16(self.as_wide().iter().cloned()) {
@@ -344,4 +350,50 @@ macro_rules! wide {
 		#[$crate::wide_attribute]
 		const W: &[u16] = _wide_!($s); W
 	}};
+}
+
+//-------------------------
+// Support macro
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! arr_impl {
+    (@replace_expr $e:expr) => { 1 };
+    ($T:ty; $N:ty, [$($x:expr),*], []) => ({
+        const __ARR_LENGTH: usize = 0 $(+ $crate::arr_impl!(@replace_expr $x) )*;
+
+        let _: [(); <$N as $crate::typenum::Unsigned>::USIZE] = [(); __ARR_LENGTH];
+		let arr: [$T; <$N as $crate::typenum::Unsigned>::USIZE] = [$($x as $T),*];
+		unsafe {
+			let generic_arr: $crate::GenericArray<$T, $N> = $crate::transmute(arr);
+			generic_arr
+		}
+    });
+    ($T:ty; $N:ty, [], [$x1:expr]) => (
+        $crate::arr_impl!($T; $crate::arr::Inc<$T, $N>, [$x1], [])
+    );
+    ($T:ty; $N:ty, [], [$x1:expr, $($x:expr),+]) => (
+        $crate::arr_impl!($T; $crate::arr::Inc<$T, $N>, [$x1], [$($x),+])
+    );
+    ($T:ty; $N:ty, [$($y:expr),+], [$x1:expr]) => (
+        $crate::arr_impl!($T; $crate::arr::Inc<$T, $N>, [$($y),+, $x1], [])
+    );
+    ($T:ty; $N:ty, [$($y:expr),+], [$x1:expr, $($x:expr),+]) => (
+        $crate::arr_impl!($T; $crate::arr::Inc<$T, $N>, [$($y),+, $x1], [$($x),+])
+    );
+}
+
+/// Macro allowing for easy generation of Generic Arrays.
+/// Example: `let test = arr![u32; 1, 2, 3];`
+#[doc(hidden)]
+#[macro_export]
+macro_rules! arr {
+    ($T:ty; $(,)*) => ({
+        unsafe { $crate::transmute::<[$T; 0], $crate::GenericArray<$T, $crate::typenum::U0>>([]) }
+    });
+    ($T:ty; $($x:expr),* $(,)*) => (
+        $crate::arr_impl!($T; $crate::typenum::U0, [], [$($x),*])
+    );
+    ($($x:expr,)+) => (arr![$($x),+]);
+    () => ("""Macro requires a type, e.g. `let array = arr![u32; 1, 2, 3];`")
 }

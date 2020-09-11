@@ -21,6 +21,7 @@ unsafe_static_str = []
 
 [dependencies]
 obfstr-impl = { path = "./impl", version = "0.1.1" }
+generic-array = "0.14"
 
 [workspace]
 members = [".", "./impl"]

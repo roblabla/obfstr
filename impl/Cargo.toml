@@ -11,5 +11,8 @@ repository = "https://github.com/CasualX/obfstr"
 version = "0.6"
 optional = true
 
+[dependencies]
+proc-macro-crate = "0.1"
+
 [lib]
 proc-macro = true
